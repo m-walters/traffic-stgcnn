@@ -1,0 +1,11 @@
+xmin 9907.53639399
+xmax 9917.53639401
+ymin 4431.05976788
+ymax 4443.05976788
+tcutoff 0.5
+velmin 0.0
+tglen 10
+nTG 144
+source /home/michael/msc/summer17/traffic/data/OUT0_FiveRing150buffer
+189515 drivers scanned
+99850 points successfully added to /home/michael/msc/summer17/traffic/nn2/data/secondring
