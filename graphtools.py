@@ -20,6 +20,52 @@ def dist_from(ref,rs):
 def coord2km(coord):
     return [coord[0]*long2km, coord[1]*lat2km]
 
+def df_empty(columns, dtypes, index=None):
+    assert len(columns)==len(dtypes)
+    df = pd.DataFrame(index=index)
+    for c,d in zip(columns, dtypes):
+        df[c] = pd.Series(dtype=d)
+    return df
+
+
+def get_veldf(fname, days=[], tgs=[], nTG=None, nvel=None):
+    if len(days) == 0:
+        # Grab all days
+        days = np.arange(7)
+    if len(tgs) == 0:
+        if not nTG:
+            print("If no tgs provided, specify nTG. Exiting")
+            return
+        tgs = np.arange(nTG)
+    vfile = open(fname,'r')
+    vdf = pd.DataFrame(columns=["day","tg","x_km","y_km","vx","vy","v","ID"])
+    vi = 0
+    for v in vfile.readlines():
+        w = v.split()
+        day = int(w[0])
+        tg = int(w[1])
+        if day not in days: continue
+        if tg not in tgs: continue
+        # Apparently appending a list of dict
+        # preserves the datatype
+        # See: https://stackoverflow.com/questions/21281463/appending-to-a-dataframe-converts-dtypes
+        vdf = vdf.append([{
+            "day": day,
+            "tg": tg,
+            "x_km": float(w[2]),
+            "y_km": float(w[3]),
+            "vx": float(w[4]),
+            "vy": float(w[5]),
+            "v": float(w[6]),
+            "ID": int(w[7])
+        }], ignore_index=True)
+        
+        vi+=1
+        if nvel and vi >= nvel: break
+    vfile.close()
+    
+    return vdf
+
 
 def generate_nodes(fname="./hwy_pts.csv", 
                    mindist=0.05, 
@@ -42,7 +88,7 @@ def generate_nodes(fname="./hwy_pts.csv",
                     continue
             nodedict.update({nodeidx:{"coords":[float(l[0]),float(l[1])]}})
             # Initialize edge dict inside nodedict
-            nodedict[nodeidx].update({"edgerefs":[]})
+            nodedict[nodeidx].update({"nbrs":[]})
             nodeidx+=1
 
     df = pd.DataFrame(nodedict).T
@@ -51,7 +97,6 @@ def generate_nodes(fname="./hwy_pts.csv",
 
 
 def node_coords_np(nodedict):
-    # nodedict.valures() returns dict sorted by key
     return np.array([node["coords"] for node in nodedict.values()],dtype=np.float)
 
 
@@ -61,8 +106,8 @@ def generate_edges(df, mindist=0.05, maxdist=1.0, maxnbr=8):
         df["coords_km"] = df.apply(lambda x: coord2km(x['coords']), axis=1)
 
     # Create edgeref column
-    if "edgerefs" not in df.columns:
-        df["edgerefs"] = ""
+    if "nbrs" not in df.columns:
+        df["nbrs"] = ""
 
     df['z'] = ""
     ilist = df.index
@@ -87,7 +132,7 @@ def generate_edges(df, mindist=0.05, maxdist=1.0, maxnbr=8):
                 n_edge+=1
             if n_edge == maxnbr: break
 
-        df.at[i,"edgerefs"] = edges
+        df.at[i,"nbrs"] = edges
 
     # Remove z
     df.drop(columns='z',inplace=True)
@@ -116,7 +161,7 @@ def generate_edges_dict(nodedict, mindist=0., maxdist=1., maxnbr=8, np_nodecoord
     coords_cp[:,1] *= lat2km
         
     for i,node in enumerate(np_nodecoords):
-        edgerefs = []
+        nbrs = []
         cent = np.asarray([node[0]*long2km,node[1]*lat2km])
         dists = dist_from(cent,coords_cp[:,:2])
         coords_cp[:,-1] = dists
@@ -129,8 +174,8 @@ def generate_edges_dict(nodedict, mindist=0., maxdist=1., maxnbr=8, np_nodecoord
             
             if coords_cp[j+1,-1] > maxdist: break
             else:
-                edgerefs.append(int(coords_cp[j+1,2]))
-        nodedict[i]["edgerefs"] = edgerefs
+                nbrs.append(int(coords_cp[j+1,2]))
+        nodedict[i]["nbrs"] = nbrs
 
         
 class graphplot:
@@ -155,9 +200,11 @@ class graphplot:
         self.nodes = {}
         self.edges = {}
         for idx in idxlist:
-            # Note that the edge method double counts edges
+            # If idxlist is a subset of all nodes
+            # we need to create a temporary edge list
+            # to only plot the edges involved
             self.nodes.update({idx:nodedict[idx]})
-            eidxs = nodedict[idx]["edgerefs"]
+            eidxs = nodedict[idx]["nbrs"]
             new_eidxs = []
             for ei in eidxs:
                 if ei in idxlist: new_eidxs.append(ei)
@@ -176,9 +223,11 @@ class graphplot:
         self.graphheight *= 1.2
         self.nodecolor = "darkblue"
         self.noderadius = self.graphwidth / self.nnodes
+        if self.noderadius < 0.001: self.noderadius = 0.001
+        if self.noderadius > 0.01: self.noderadius = 0.01
         
         if not axis or not figure:
-            self.fig, self.ax = plt.subplots(1,1,figsize=(20,20) if not figsize else figsize)
+            self.fig, self.ax = plt.subplots(1,1,figsize=(16,16) if not figsize else figsize)
         else:
             self.fig, self.ax = figure, axis
         self.ax.set_ylim(self.ylims[0], self.ylims[1])
@@ -215,7 +264,7 @@ class viewer(graphplot):
     viewer.connect()
     To instantiate and use
     '''
-    def __init__(self, nodes_obj, window=None, figsize=None, idxlist=None):
+    def __init__(self, nodes_obj, window=None, figsize=None, idxlist=[]):
         # window are the [xmin,xmax,ymin,ymax] dimensions of the viewer
         
         # Create nodedict if nodes is a dataframe
@@ -224,7 +273,7 @@ class viewer(graphplot):
         else:
             nodedict = nodes_obj
             
-        self.figsize = (20,20) if not figsize else figsize
+        self.figsize = (16,16) if not figsize else figsize
         self.fig_main = plt.figure(figsize=self.figsize)
         self.grid = plt.GridSpec(2,2,hspace=0.1, wspace=0.1,width_ratios=[2.2,1],height_ratios=[0.8,1])
         self.axs = [self.fig_main.add_subplot(self.grid[:,0])]
@@ -275,7 +324,7 @@ class viewer(graphplot):
             if x>xmin and x<xmax and y>ymin and y<ymax:
                 insetnodes.update({key: node})
                 self.plotnode(self.axs[1],x,y)
-                edges = node["edgerefs"]
+                edges = node["nbrs"]
                 for e in edges:
                     if e in self.idxlist:
                         nbr = self.nodes[e]["coords"]
@@ -356,5 +405,6 @@ def get_info_dict(fname, type="vel"):
             info.update({"n_points": int(words[0])})
         else:
             info.update({str(words[0]): float(words[1])})
-
+      
+    finfo.close()
     return info
