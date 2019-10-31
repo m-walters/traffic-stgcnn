@@ -1,6 +1,8 @@
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Circle, Rectangle
+import csv
+import pandas as pd
 
 long2km = 1/0.011741652782473
 lat2km = 1/0.008994627867046
@@ -15,12 +17,91 @@ def dist_from(ref,rs):
     # rs is list of vectors to compare, nx2
     return np.linalg.norm((ref-rs),axis=1)
 
-def generate_edges(nodedict_, maxdist=1., maxnbr=8, np_nodecoords=None, maxdist_km=True):
+def coord2km(coord):
+    return [coord[0]*long2km, coord[1]*lat2km]
+
+
+def generate_nodes(fname="./hwy_pts.csv", 
+                   mindist=0.05, 
+                   region=None, 
+                   **kwargs):
+    # region is scope for domain, [xmin,xmax,ymin,ymax] in GSI coordinates
+    # use kwargs for passing kws to generate_edges
+    # mindist to reduce redundant nodes
+    # We can optimize node removal during the edge finding process
+    
+    nodedict = {}
+    nodeidx = 0
+    with open(fname, newline='') as hwyfile:
+        reader = csv.reader(hwyfile)
+        next(reader, None) # skip header
+        for l in reader:
+            x,y = float(l[0]), float(l[1])
+            if region:
+                if x<region[0] or x>region[1] or y<region[2] or y>region[3]:
+                    continue
+            nodedict.update({nodeidx:{"coords":[float(l[0]),float(l[1])]}})
+            # Initialize edge dict inside nodedict
+            nodedict[nodeidx].update({"edgerefs":[]})
+            nodeidx+=1
+
+    df = pd.DataFrame(nodedict).T
+    generate_edges(df, mindist, **kwargs)
+    return df
+
+
+def node_coords_np(nodedict):
+    # nodedict.valures() returns dict sorted by key
+    return np.array([node["coords"] for node in nodedict.values()],dtype=np.float)
+
+
+def generate_edges(df, mindist=0.05, maxdist=1.0, maxnbr=8):
+    # Create km coords
+    if "coords_km" not in df.columns:
+        df["coords_km"] = df.apply(lambda x: coord2km(x['coords']), axis=1)
+
+    # Create edgeref column
+    if "edgerefs" not in df.columns:
+        df["edgerefs"] = ""
+
+    df['z'] = ""
+    ilist = df.index
+    for i in ilist:
+        if i not in df.index:
+            # node has been removed, continue
+            continue
+        # Populate 'z' column
+        df['z'] = dist_from(df['coords_km'][i], np.asarray(df['coords_km'].tolist()))
+        df.sort_values(by=['z'],inplace=True)
+        # Erase this node if there is a node that's too close
+        if df.iloc[1]['z'] < mindist:
+            df.drop(i, inplace=True)
+            continue
+        edges = []
+        n_edge = 0
+        for idx, node in df.iterrows():
+            if i == idx: continue
+            z = node["z"]
+            if z < maxdist:
+                edges.append(idx)
+                n_edge+=1
+            if n_edge == maxnbr: break
+
+        df.at[i,"edgerefs"] = edges
+
+    # Remove z
+    df.drop(columns='z',inplace=True)
+    
+    # Reorder by index
+    df.sort_index(inplace=True)
+    
+    
+def generate_edges_dict(nodedict, mindist=0., maxdist=1., maxnbr=8, np_nodecoords=None):
     #
     # maxdist in km
     #
     if not np_nodecoords:
-        np_nodecoords = np.array([node["coords"] for node in nodedict_.values()],dtype=np.float)
+        np_nodecoords = node_coords_np(nodedict)
     
     # calculate distances
     coords_cp = np_nodecoords.copy()
@@ -42,11 +123,14 @@ def generate_edges(nodedict_, maxdist=1., maxnbr=8, np_nodecoords=None, maxdist_
         coords_cp = coords_cp[coords_cp[:,-1].argsort()]
         
         # Get nbr idxs within maxdist, up to maxnbr
+        # Additionally, remove nodes that are too close
+        # and hence redundant
         for j in range(maxnbr):
+            
             if coords_cp[j+1,-1] > maxdist: break
             else:
                 edgerefs.append(int(coords_cp[j+1,2]))
-        nodedict_[i]["edgerefs"] = edgerefs
+        nodedict[i]["edgerefs"] = edgerefs
 
         
 class graphplot:
@@ -56,9 +140,17 @@ class graphplot:
     Possibly a very useful example if wanting to implement a live inset viewer:
     https://matplotlib.org/3.1.1/users/event_handling.html
     '''
-    def __init__(self,nodedict,idxlist=None,figsize=None,figure=None,axis=None):
+    def __init__(self,nodes_obj,idxlist=[],figsize=None,figure=None,axis=None):
+        # First see if nodes is a dataframe
+        if "DataFrame" in str(type(nodes_obj)):
+            nodedict = nodes_obj.to_dict("index")
+        else:
+            nodedict = nodes_obj
+            
+        # Create index list of all nodes if empty
         if len(idxlist) == 0:
-            idxlist = np.arange(len(nodedict))
+            for k, v in nodedict.items():
+                idxlist.append(k)
         self.idxlist = idxlist
         self.nodes = {}
         self.edges = {}
@@ -123,10 +215,15 @@ class viewer(graphplot):
     viewer.connect()
     To instantiate and use
     '''
-    def __init__(self, nodedict, window=None, figsize=None, idxlist=None):
-        #
+    def __init__(self, nodes_obj, window=None, figsize=None, idxlist=None):
         # window are the [xmin,xmax,ymin,ymax] dimensions of the viewer
-        #
+        
+        # Create nodedict if nodes is a dataframe
+        if "DataFrame" in str(type(nodes_obj)):
+            nodedict = nodes_obj.to_dict("index")
+        else:
+            nodedict = nodes_obj
+            
         self.figsize = (20,20) if not figsize else figsize
         self.fig_main = plt.figure(figsize=self.figsize)
         self.grid = plt.GridSpec(2,2,hspace=0.1, wspace=0.1,width_ratios=[2.2,1],height_ratios=[0.8,1])
@@ -240,3 +337,24 @@ class viewer(graphplot):
         self.window.figure.canvas.mpl_disconnect(self.cidpress)
         self.window.figure.canvas.mpl_disconnect(self.cidrelease)
         self.window.figure.canvas.mpl_disconnect(self.cidmotion)
+
+        
+def get_info_dict(fname, type="vel"):
+    info = {}
+    finfo = open(fname,'r')
+    for l in finfo.readlines():
+        words = l.split()
+        if "tglen" in words:
+            info.update({"tglen": int(words[1])})
+        elif "nTG" in words:
+            info.update({"nTG": int(words[1])})
+        elif "source" in words:
+            info.update({"source": words[1]})
+        elif "drivers" in words:
+            info.update({"n_drivers": int(words[0])})
+        elif "points" in words:
+            info.update({"n_points": int(words[0])})
+        else:
+            info.update({str(words[0]): float(words[1])})
+
+    return info

@@ -4,7 +4,6 @@ import os
 import sys, getopt
 from datetime import date
 import time
-import inputadd
 
 long2km = 1/0.011741652782473
 lat2km = 1/0.008994627867046
@@ -21,41 +20,61 @@ def add(fname, df, tcutoff, minvel, silent=True):
     We assume df values for x,y are in the desired domain
     fname header: d tg x y vx vy v id
     '''
+    def get_row(i):
+        t, x, y, ID = df['timeU70'][i], df['x'][i], df['y'][i], int(df['ID'][i])
+        day, tg = int(df['day'][i]), int(df['timegroup'][i])
+        return [t,x,y,ID,day,tg]
+        
+
     N = (long)(len(df.index))
     oldN = (long)(len(df.index))
     nmissed = 0L # filtered out paths
     m = N/20
     dx, dy, dt, vx, vy = [],[],[],[],[]
-    i = -1
 
     fout = open(fname,'a')
+
     if not silent: print "Stage 1"
+    # Collect first point
+    t0, x0, y0, ID0, day0, tg0 = get_row(0)
+    i=0
     while (i<N-2):
         i+=1
         if (i%m==0): 
             if not silent:
                 sys.stdout.write(str(int(100*float(i)/N))+"%..")
                 sys.stdout.flush()
-        dT = (df['timeU70'][i+1] - df['timeU70'][i]) / 60000.
-        if ((dT > tcutoff) or (df['ID'][i] != df['ID'][i+1])): 
+
+        # Collect second point
+        t1, x1, y1, ID1, day1, tg1 = get_row(i)
+        
+        # Filter paths with too large a dT
+        # t1,t0 are ms, dT is in minutes
+        dT = (t1 - t0) / 60000.
+        if ((dT > tcutoff) or (ID0 != ID1)): 
             nmissed += 1
+            t0, x0, y0, ID0, day0, tg0 = t1, x1, y1, ID1, day1, tg1
             continue
-        dX = df['x'][i+1] - df['x'][i]
-        dY = df['y'][i+1] - df['y'][i]
-        vx = dX / (dT/60.)
+
+        dX = x1 - x0
+        dY = y1 - y0
+        vx = dX / (dT/60.) # km/hr
         vy = dY / (dT/60.)
+
+        # Filter paths that are too slow
         v = np.sqrt(vx*vx + vy*vy)
         if v<minvel:
             nmissed += 1
+            t0, x0, y0, ID0, day0, tg0 = t1, x1, y1, ID1, day1, tg1
             continue
 
-        day = int(df['day'][i])
-        tg = int(df['timegroup'][i])
-        fout.write("%d %d %g %g %g %g %g %d\n" %(int(df['day'][i]),\
-            int(df['timegroup'][i]),
-            float(df['x'][i]),
-            float(df['y'][i]),
-            vx,vy,v,int(df['ID'][i])))
+        # Write to file
+        fout.write("%d %d %g %g %g %g %g %d\n" %(day0,\
+            tg0, float(x0), float(y0),
+            vx, vy, v, ID0))
+
+        # Second pt is new ref point
+        t0, x0, y0, ID0, day0, tg0 = t1, x1, y1, ID1, day1, tg1
 
     fout.close()
     N = N-nmissed
@@ -73,7 +92,7 @@ arglist = sys.argv[1:]
 tcutoff = 1.0
 velmin = 0.0
 runname = ""
-runpath = "/home/michael/msc/summer17/traffic/data/"
+runpath = "/home/michael/msc/summer17/traffic/traffic-stgcnn/veldata/"
 tglen = 10
 
 try:
@@ -115,6 +134,13 @@ xmax = 116.44826879600 * long2km
 ymin = 39.85573366870 * lat2km
 ymax = 39.96366920310 * lat2km
 
+# Fir testing
+#xmin *= 1.4
+#xmax *= 1.4
+#ymin *= 1.4
+#ymax *= 1.4
+
+
 sourcename = "/home/michael/msc/summer17/traffic/data/OUT0_FiveRing150buffer"
 
 nTG = 60*24/tglen
@@ -144,8 +170,8 @@ cnt_itot = 0
 cnt_dr = 0
 cnt_iter = 0
 cnt_success = 0
-maxdrivers = int(1e8)
-maxdata = int(1e4)
+maxdrivers = int(1e8) 
+maxdata = int(1e3)
 driverIDs = {}
 totaldrivers = 189515 # total num lines in OUT0
 
@@ -153,12 +179,15 @@ t0 = time.time()
 t1 = time.time()
 stdout("Processing source file")
 for d in fsource.readlines():
-    if cnt_dr%1e3==0:
+    if cnt_dr%5e3==0:
         t2 = time.time()
         stdout(str(cnt_dr)+" drivers scanned of "+str(totaldrivers)) 
-        stdout(str(t2-t1)+" seconds for last 1000 drivers, "+str(t2-t0)+" total time")
+        stdout(str(t2-t1)+" seconds for last 5000 drivers, "+str(t2-t0)+" total time")
         t1 = time.time()
-    #if (cnt_itot > maxdata) or (cnt_dr > maxdrivers): break
+
+    # Limit amnt of data to speed up testing
+    #if (cnt_itot >= maxdata) or (cnt_dr >= maxdrivers): break
+
     driver = d.split("  ")
     driverIDs.update({cnt_dr: driver[0]})
     driverdata = driver[1].split("|")
@@ -182,16 +211,15 @@ for d in fsource.readlines():
         day = (date(idate[0], idate[1], idate[2]).isoweekday()) - 1 # monday = 0, sunday = 6
 
             
-        #rawdata = np.append(rawdata, [[float(spt[0]), float(spt[1]), 
-        #                               timegroup, day, long(spt[2]), cnt_dr]], axis=0)    
-        rawdata[cnt_i-1] = [float(spt[0]), float(spt[1]), timegroup, day, long(spt[2]), cnt_dr]    
+        #rawdata[cnt_i-1] = [float(spt[0]), float(spt[1]), timegroup, day, long(spt[2]), cnt_dr]    
+        rawdata[cnt_i-1] = [cnt_dr, float(spt[0]), float(spt[1]), long(spt[2]), timegroup, day]    
 
         if (cnt_i)%buffersize==0:
             rawdata = rawdata[np.lexsort(rawdata.T)]
-            df = pd.DataFrame(data=rawdata, columns=['x','y','timegroup','day','timeU70','ID'])
+            df = pd.DataFrame(data=rawdata, columns=['ID','x','y','timeU70','timegroup','day'])
             t4 = time.time()
-            stdout("Dumping rawdata to nninput...")
-            cnt_success += inputadd.add(runpath+runname,df,tcutoff,velmin,silent=True)
+            stdout("Adding rawdata...")
+            cnt_success += add(runpath+runname,df,tcutoff,velmin,silent=True)
             t5 =time.time()
             stdout(str(t5-t4)+" seconds")
             df = None
@@ -203,13 +231,15 @@ for d in fsource.readlines():
     
 
 fsource.close()
-stdout("Adding rawdata remainder")
-rawdata = rawdata[:cnt_i]
-rawdata = rawdata[np.lexsort(rawdata.T)]
-df = pd.DataFrame(data=rawdata, columns=['x','y','timegroup','day','timeU70','ID'])
-cnt_success += inputadd.add(runpath+runname,df,tcutoff,velmin,silent=True)
-df = None   
-rawdata = None
+
+if cnt_i != 0:
+    stdout("Adding rawdata remainder")
+    rawdata = rawdata[:cnt_i]
+    rawdata = rawdata[np.lexsort(rawdata.T)]
+    df = pd.DataFrame(data=rawdata, columns=['ID','x','y','timeU70','timegroup','day'])
+    cnt_success += add(runpath+runname,df,tcutoff,velmin,silent=True)
+    df = None   
+    rawdata = None
 stdout("Done")
 
 stdout(str(cnt_dr)+" drivers scanned\n"+str(cnt_success)+" points successfully added to "+runpath+runname)
