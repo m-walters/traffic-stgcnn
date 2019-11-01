@@ -6,4 +6,6 @@ The current code format is my attempt at dividing the geographic map into a grid
 
 Typical CNN applications are on latticed domains (i.e. images). However, many real-world problems are not on lattices, and yet exhibit a spatial relationship. Graph-CNNs are a more general type of CNN where positional relationships are encoded as vertices in a graph. I say more general because a regular pxp image is equivalently a graph with connections between neighbouring pixels.  
 
-On may quickly see how this relates to traffic prediction. Segments of roads would be graph nodes, and vertices occur where roads are connected. Each node would have one or more statistical variables, such as average velocity and number of cars.  
+One may quickly see how this relates to traffic prediction. Segments of roads would be graph nodes, and vertices occur where roads are connected. Each node would have one or more statistical variables, such as average velocity and number of cars.  
+
+Dataset was collected from Sep 30 2015 -- Oct 31 2015
