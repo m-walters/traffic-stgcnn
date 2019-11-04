@@ -27,8 +27,30 @@ def df_empty(columns, dtypes, index=None):
         df[c] = pd.Series(dtype=d)
     return df
 
+def nodes_nearby(p, nodes_df, within):
+    # Returns closest node index and its row within distance "within"
+    nodes_df['z'] = dist_from(p, np.asarray(nodes_df['coords_km'].tolist()))
+    nodes_df.sort_values(by=['z'],inplace=True)
+    nodes_return, d2n_return = [],[]
+    z = nodes_df.iloc[0]['z']
+    i = 0
+    while z < within:
+        nodes_return.append(nodes_df.index[i])
+        d2n_return.append(z)
+        i+=1
+        z = nodes_df.iloc[i]['z']
+    return nodes_return, d2n_return
 
-def get_veldf(fname, days=[], tgs=[], nTG=None, nvel=None):
+def node_coords_np(nodedict):
+    return np.array([node["coords"] for node in nodedict.values()],dtype=np.float)
+
+def get_edge_angle(nodedf,i,j):
+    dr = np.array(nodedf.at[j,"coords_km"]) - np.array(nodedf.at[i,"coords_km"])
+    z = np.complex(dr[0], dr[1])
+    return np.angle(z)   
+    
+    
+def get_veldf(fname, nodedf, days=[], tgs=[], nTG=None, nvel=None):
     if len(days) == 0:
         # Grab all days
         days = np.arange(7)
@@ -38,7 +60,7 @@ def get_veldf(fname, days=[], tgs=[], nTG=None, nvel=None):
             return
         tgs = np.arange(nTG)
     vfile = open(fname,'r')
-    vdf = pd.DataFrame(columns=["day","tg","x_km","y_km","vx","vy","v","ID"])
+    vdf = pd.DataFrame(columns=["day","tg","x_km","y_km","vx","vy","v","nodeID","dist2node","angle"])
     vi = 0
     for v in vfile.readlines():
         w = v.split()
@@ -49,18 +71,35 @@ def get_veldf(fname, days=[], tgs=[], nTG=None, nvel=None):
         # Apparently appending a list of dict
         # preserves the datatype
         # See: https://stackoverflow.com/questions/21281463/appending-to-a-dataframe-converts-dtypes
-        vdf = vdf.append([{
-            "day": day,
-            "tg": tg,
-            "x_km": float(w[2]),
-            "y_km": float(w[3]),
-            "vx": float(w[4]),
-            "vy": float(w[5]),
-            "v": float(w[6]),
-            "ID": int(w[7])
-        }], ignore_index=True)
+        x_km, y_km = float(w[2]), float(w[3])
+        nbrnodes, d2ns = nodes_nearby([x_km, y_km], nodedf, within=1.0)
+        if len(nbrnodes) == 0:
+            # point is too far from any nodes for 
+            # this to be accurate data
+            continue
         
-        vi+=1
+        # Get vel angle in [-pi,pi] format
+        vx, vy = float(w[4]), float(w[5])
+        z = np.complex(vx,vy)
+        angle = np.angle(z)
+
+        # Iterate over neighbours and add to vdf
+        for inbr in range(len(nbrnodes)):
+            vdf = vdf.append([{
+                "day": day,
+                "tg": tg,
+                "x_km": x_km,
+                "y_km": y_km,
+                "vx": vx,
+                "vy": vy,
+                "v": float(w[6]),
+                "nodeID": nbrnodes[inbr],
+                "dist2node": d2ns[inbr],
+                "angle": angle
+            }], ignore_index=True)
+
+            vi+=1
+            if nvel and vi >= nvel: break
         if nvel and vi >= nvel: break
     vfile.close()
     
@@ -92,12 +131,48 @@ def generate_nodes(fname="./hwy_pts.csv",
             nodeidx+=1
 
     df = pd.DataFrame(nodedict).T
-    generate_edges(df, mindist, **kwargs)
-    return df
+    nedge = generate_edges(df, mindist, **kwargs)
 
+    # Make an edge connection array
+    # We should re-index the nodes after creating the df
+    # That will make this edge array much simpler and minimal size
+    rekey = {}
+    newkey = 0
+    for key,node in df.iterrows():
+        rekey.update({key: newkey})
+        newkey+=1
+    df.reset_index(drop=True,inplace=True)
 
-def node_coords_np(nodedict):
-    return np.array([node["coords"] for node in nodedict.values()],dtype=np.float)
+    for key,node in df.iterrows():
+        nbrs = node['nbrs']
+        newnbrs = []
+        for nbr in nbrs:
+            newnbrs.append(rekey[nbr])
+        df.at[key,'nbrs'] = list(newnbrs)
+
+    # Create A, sender, and receiver arrays
+    # Create edges df
+#    Nn = len(df.index)
+#    A = -1 * np.ones(shape=(Nn,Nn),dtype=np.int) # boolean of connections
+#    senders = np.zeros(shape=(nedge,),dtype=np.int)
+#    receivers = np.zeros(shape=(nedge,), dtype=np.int)
+    
+    edges = pd.DataFrame(columns=["sender","receiver","angle"])
+    for key,node in df.iterrows():
+        for nbr in node['nbrs']:
+#            A[key,nbr] = edge_iter
+#            senders[edge_iter] = key
+#            receivers[edge_iter] = nbr
+
+            # Get theta in [-pi,pi] radians
+            theta = get_edge_angle(df,key,nbr)
+            edges = edges.append([{
+                "sender": key, 
+                "receiver": nbr, 
+                "angle": theta
+            }], ignore_index=True)
+
+    return df, edges
 
 
 def generate_edges(df, mindist=0.05, maxdist=1.0, maxnbr=8):
@@ -110,73 +185,45 @@ def generate_edges(df, mindist=0.05, maxdist=1.0, maxnbr=8):
         df["nbrs"] = ""
 
     df['z'] = ""
-    ilist = df.index
-    for i in ilist:
-        if i not in df.index:
-            # node has been removed, continue
+    droplist = []
+    firstinst=-1
+    for idx,node in df.iterrows():
+        if idx in droplist:
             continue
+        df['z'] = dist_from(node['coords_km'], np.asarray(df['coords_km'].tolist()))
+        df.sort_values(by=['z'], inplace=True)
+        # Erase nodes that are too close
+        
+        for j in df.index[1:]:
+            if df.loc[j]['z'] < mindist:
+                droplist.append(j)
+            else:
+                break
+
+    df.drop(droplist,inplace=True)
+    n_edge_tot = 0
+    for idx,node in df.iterrows():
         # Populate 'z' column
-        df['z'] = dist_from(df['coords_km'][i], np.asarray(df['coords_km'].tolist()))
+        df['z'] = dist_from(node['coords_km'], np.asarray(df['coords_km'].tolist()))
         df.sort_values(by=['z'],inplace=True)
-        # Erase this node if there is a node that's too close
-        if df.iloc[1]['z'] < mindist:
-            df.drop(i, inplace=True)
-            continue
         edges = []
         n_edge = 0
-        for idx, node in df.iterrows():
-            if i == idx: continue
-            z = node["z"]
-            if z < maxdist:
-                edges.append(idx)
+        for j in df.index[1:]:
+            if df.loc[j]['z'] < maxdist:
+                edges.append(j)
                 n_edge+=1
+            else: break
             if n_edge == maxnbr: break
-
-        df.at[i,"nbrs"] = edges
+        df.at[idx,"nbrs"] = edges
+        n_edge_tot += n_edge
 
     # Remove z
     df.drop(columns='z',inplace=True)
-    
     # Reorder by index
     df.sort_index(inplace=True)
     
+    return n_edge_tot
     
-def generate_edges_dict(nodedict, mindist=0., maxdist=1., maxnbr=8, np_nodecoords=None):
-    #
-    # maxdist in km
-    #
-    if not np_nodecoords:
-        np_nodecoords = node_coords_np(nodedict)
-    
-    # calculate distances
-    coords_cp = np_nodecoords.copy()
-    n_node = len(coords_cp)
-    indexes = np.arange(n_node).reshape(n_node,1)
-    coords_cp = np.append(coords_cp,indexes,axis=1)
-    z = np.zeros((n_node,1)) 
-    coords_cp = np.append(coords_cp,z,axis=1)
-    
-    # Convert angular coords to km
-    coords_cp[:,0] *= long2km
-    coords_cp[:,1] *= lat2km
-        
-    for i,node in enumerate(np_nodecoords):
-        nbrs = []
-        cent = np.asarray([node[0]*long2km,node[1]*lat2km])
-        dists = dist_from(cent,coords_cp[:,:2])
-        coords_cp[:,-1] = dists
-        coords_cp = coords_cp[coords_cp[:,-1].argsort()]
-        
-        # Get nbr idxs within maxdist, up to maxnbr
-        # Additionally, remove nodes that are too close
-        # and hence redundant
-        for j in range(maxnbr):
-            
-            if coords_cp[j+1,-1] > maxdist: break
-            else:
-                nbrs.append(int(coords_cp[j+1,2]))
-        nodedict[i]["nbrs"] = nbrs
-
         
 class graphplot:
     '''
@@ -185,7 +232,10 @@ class graphplot:
     Possibly a very useful example if wanting to implement a live inset viewer:
     https://matplotlib.org/3.1.1/users/event_handling.html
     '''
-    def __init__(self,nodes_obj,idxlist=[],figsize=None,figure=None,axis=None):
+    def __init__(self,nodes_obj,idxlist=[],figsize=None,figure=None,axis=None,usekm=False):
+        self.coordunits = "coords"
+        if usekm: self.coordunits = "coords_km"
+            
         # First see if nodes is a dataframe
         if "DataFrame" in str(type(nodes_obj)):
             nodedict = nodes_obj.to_dict("index")
@@ -209,7 +259,7 @@ class graphplot:
             for ei in eidxs:
                 if ei in idxlist: new_eidxs.append(ei)
             self.edges.update({idx:list(new_eidxs)})
-        self.npnodes = np.array([node["coords"] for node in self.nodes.values()],dtype=np.float)
+        self.npnodes = np.array([node[self.coordunits] for node in self.nodes.values()],dtype=np.float)
         self.nnodes = len(self.npnodes)
         self.xlims = [np.min(self.npnodes[:,0]),np.max(self.npnodes[:,0])]
         self.ylims = [np.min(self.npnodes[:,1]),np.max(self.npnodes[:,1])]
@@ -223,11 +273,15 @@ class graphplot:
         self.graphheight *= 1.2
         self.nodecolor = "darkblue"
         self.noderadius = self.graphwidth / self.nnodes
-        if self.noderadius < 0.001: self.noderadius = 0.001
-        if self.noderadius > 0.01: self.noderadius = 0.01
+        if usekm:
+            if self.noderadius < 0.1: self.noderadius = 0.1
+            if self.noderadius > 0.5: self.noderadius = 0.5
+        else:
+            if self.noderadius < 0.001: self.noderadius = 0.001
+            if self.noderadius > 0.01: self.noderadius = 0.01
         
         if not axis or not figure:
-            self.fig, self.ax = plt.subplots(1,1,figsize=(16,16) if not figsize else figsize)
+            self.fig, self.ax = plt.subplots(1,1,figsize=(9,9) if not figsize else figsize)
         else:
             self.fig, self.ax = figure, axis
         self.ax.set_ylim(self.ylims[0], self.ylims[1])
@@ -236,9 +290,9 @@ class graphplot:
         
     def drawgraph(self):
         for i in self.idxlist:
-            node, edges = self.nodes[i]["coords"], self.edges[i]
+            node, edges = self.nodes[i][self.coordunits], self.edges[i]
             for edge in edges:
-                nbr = self.nodes[edge]["coords"]
+                nbr = self.nodes[edge][self.coordunits]
                 self.plotLine(self.ax,node[0],node[1],nbr[0],nbr[1])
             self.plotnode(self.ax,node[0], node[1])            
         
@@ -264,8 +318,11 @@ class viewer(graphplot):
     viewer.connect()
     To instantiate and use
     '''
-    def __init__(self, nodes_obj, window=None, figsize=None, idxlist=[]):
+    def __init__(self, nodes_obj, window=None, figsize=None, idxlist=[], usekm=False):
         # window are the [xmin,xmax,ymin,ymax] dimensions of the viewer
+        
+        self.coordunits = "coords"
+        if usekm: self.coordunits = "coords_km"
         
         # Create nodedict if nodes is a dataframe
         if "DataFrame" in str(type(nodes_obj)):
@@ -273,14 +330,15 @@ class viewer(graphplot):
         else:
             nodedict = nodes_obj
             
-        self.figsize = (16,16) if not figsize else figsize
+        self.figsize = (9,9) if not figsize else figsize
         self.fig_main = plt.figure(figsize=self.figsize)
         self.grid = plt.GridSpec(2,2,hspace=0.1, wspace=0.1,width_ratios=[2.2,1],height_ratios=[0.8,1])
         self.axs = [self.fig_main.add_subplot(self.grid[:,0])]
         self.axs.append(self.fig_main.add_subplot(self.grid[0,1]))
 
         # Initialize parent graph object
-        super().__init__(nodedict,idxlist,(self.figsize[0]*0.75,self.figsize[1]*0.75), self.fig_main, self.axs[0])
+        super().__init__(nodedict,idxlist,(self.figsize[0]*0.75,self.figsize[1]*0.75), 
+                         self.fig_main, self.axs[0],usekm=usekm)
         self.axs[0].set_aspect('equal', adjustable='box',anchor="NW")
 
         # Draw main graph
@@ -292,7 +350,8 @@ class viewer(graphplot):
         #              self.xlims[0]+0.6*self.graphwidth,
         #              self.ylims[0]+0.4*self.graphheight,
         #              self.ylims[0]+0.6*self.graphheight]
-            dw = 2. / long2km
+            dw = 1. / long2km
+            if usekm: dw = 1.
             window = [self.xlims[0] + 0.5*self.graphwidth - dw,
                       self.xlims[0] + 0.5*self.graphwidth + dw,
                       self.ylims[0] + 0.5*self.graphheight - dw,
@@ -320,14 +379,14 @@ class viewer(graphplot):
         insetnodes = {}
         xmin,ymin,xmax,ymax = self.get_rect_coords(self.window)        
         for key,node in self.nodes.items():
-            x,y = node["coords"]
+            x,y = node[self.coordunits]
             if x>xmin and x<xmax and y>ymin and y<ymax:
                 insetnodes.update({key: node})
                 self.plotnode(self.axs[1],x,y)
                 edges = node["nbrs"]
                 for e in edges:
                     if e in self.idxlist:
-                        nbr = self.nodes[e]["coords"]
+                        nbr = self.nodes[e][self.coordunits]
                         self.plotLine(self.axs[1],x,y,nbr[0],nbr[1])
 
         self.axs[1].set_ylim(ymin,ymax)

@@ -30,6 +30,7 @@ def add(fname, df, tcutoff, minvel, silent=True):
     oldN = (long)(len(df.index))
     nmissed = 0L # filtered out paths
     m = N/20
+    if m < 1: m = 1
     dx, dy, dt, vx, vy = [],[],[],[],[]
 
     fout = open(fname,'a')
@@ -171,13 +172,21 @@ cnt_dr = 0
 cnt_iter = 0
 cnt_success = 0
 maxdrivers = int(1e8) 
-maxdata = int(1e3)
+maxdata = int(1e5)
 driverIDs = {}
 totaldrivers = 189515 # total num lines in OUT0
 
 t0 = time.time()
 t1 = time.time()
 stdout("Processing source file")
+
+
+# For testing and seeing
+# how far apart this data ranges in time
+# 1445207734622 is ms from first entry
+mintime, maxtime = 1445207734622,0
+
+
 for d in fsource.readlines():
     if cnt_dr%5e3==0:
         t2 = time.time()
@@ -212,6 +221,10 @@ for d in fsource.readlines():
 
             
         #rawdata[cnt_i-1] = [float(spt[0]), float(spt[1]), timegroup, day, long(spt[2]), cnt_dr]    
+        msU70 = long(spt[2])
+        if msU70 < mintime: mintime=msU70
+        if msU70 > maxtime: maxtime=msU70
+        
         rawdata[cnt_i-1] = [cnt_dr, float(spt[0]), float(spt[1]), long(spt[2]), timegroup, day]    
 
         if (cnt_i)%buffersize==0:
@@ -229,6 +242,7 @@ for d in fsource.readlines():
 
     cnt_dr+=1
     
+print("mintime and maxtime in U70:",str(mintime)," ",str(maxtime))
 
 fsource.close()
 
