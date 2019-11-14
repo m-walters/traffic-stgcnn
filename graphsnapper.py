@@ -1,20 +1,7 @@
-
-# coding: utf-8
-
-# In[ ]:
-
-
 import numpy as np
 import graphtools as gt
 from importlib import reload
 import pandas as pd
-import matplotlib as plt
-
-get_ipython().magic(u'matplotlib notebook')
-
-
-# In[ ]:
-
 
 # Hyperparams
 vfname = "veldata/secondring_t1.0v1.0l10"
@@ -24,16 +11,6 @@ print("Creating info dict")
 info = gt.get_info_dict(infofname)
 for key,val in sorted(info.items()):
     print(key,"\t",val)
-
-
-# In[ ]:
-
-
-reload(gt)
-
-
-# In[ ]:
-
 
 # Gather nodes
 xmin,xmax = info["xmin"]/gt.long2km, info["xmax"]/gt.long2km
@@ -46,18 +23,10 @@ n_nodes, n_edges = len(nodes.index), len(edges.index)
 print("Number of nodes", n_nodes)
 print("Number of edges", n_edges)
 
-
-# In[ ]:
-
-
 # 5000 pts takes about 30 seconds
 vdf = gt.get_veldf(vfname,nodedf=nodes,days=[],nTG=info["nTG"])
 vdf.drop_duplicates(inplace=True)
 print(len(vdf.index))
-
-
-# In[ ]:
-
 
 # five files
 node_fname = "nn_inputs/node_features"
@@ -65,17 +34,6 @@ edge_fname = "nn_inputs/edge_features"
 send_fname = "nn_inputs/senders"
 receive_fname = "nn_inputs/receivers"
 glbl_fname = "nn_inputs/glbls"
-
-
-# In[ ]:
-
-
-# Node features:   ncars, v_avg, v_std
-# Edge features:   ncars, v_avg, v_std, pol (polarity, towards/away)
-# For edge features, perhaps capture cars that are within +/- pi/4 radians of the edge's line
-# Don't forget about the cars going in the opposite direction too
-# Picture a bowtie centered on the edge's "road line"
-# For averaging, do a weighted sum based on dist2node
 
 nodes["ncar"] = 0
 nodes["v_avg"] = 0.

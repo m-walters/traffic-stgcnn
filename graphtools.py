@@ -112,7 +112,7 @@ def generate_nodes(fname="./hwy_pts.csv",
                    **kwargs):
     # region is scope for domain, [xmin,xmax,ymin,ymax] in GSI coordinates
     # use kwargs for passing kws to generate_edges
-    # mindist to reduce redundant nodes
+    # mindist between nodes to reduce redundancies
     # We can optimize node removal during the edge finding process
     
     nodedict = {}
@@ -131,11 +131,14 @@ def generate_nodes(fname="./hwy_pts.csv",
             nodeidx+=1
 
     df = pd.DataFrame(nodedict).T
-    nedge = generate_edges(df, mindist, **kwargs)
-
-    # Make an edge connection array
-    # We should re-index the nodes after creating the df
-    # That will make this edge array much simpler and minimal size
+    df["coords_km"] = df.apply(lambda x: coord2km(x['coords']), axis=1)
+    
+    # Link neighbours, and drop nodes
+    link_neighbours(df, mindist, **kwargs)
+    # Reorder by index
+    df.sort_index(inplace=True)
+    
+    # Let's re-index the nodes
     rekey = {}
     newkey = 0
     for key,node in df.iterrows():
@@ -143,6 +146,7 @@ def generate_nodes(fname="./hwy_pts.csv",
         newkey+=1
     df.reset_index(drop=True,inplace=True)
 
+    # Update nbr lists with new keys
     for key,node in df.iterrows():
         nbrs = node['nbrs']
         newnbrs = []
@@ -150,20 +154,10 @@ def generate_nodes(fname="./hwy_pts.csv",
             newnbrs.append(rekey[nbr])
         df.at[key,'nbrs'] = list(newnbrs)
 
-    # Create A, sender, and receiver arrays
-    # Create edges df
-#    Nn = len(df.index)
-#    A = -1 * np.ones(shape=(Nn,Nn),dtype=np.int) # boolean of connections
-#    senders = np.zeros(shape=(nedge,),dtype=np.int)
-#    receivers = np.zeros(shape=(nedge,), dtype=np.int)
-    
+    # Generate edges
     edges = pd.DataFrame(columns=["sender","receiver","angle"])
     for key,node in df.iterrows():
         for nbr in node['nbrs']:
-#            A[key,nbr] = edge_iter
-#            senders[edge_iter] = key
-#            receivers[edge_iter] = nbr
-
             # Get theta in [-pi,pi] radians
             theta = get_edge_angle(df,key,nbr)
             edges = edges.append([{
@@ -175,25 +169,24 @@ def generate_nodes(fname="./hwy_pts.csv",
     return df, edges
 
 
-def generate_edges(df, mindist=0.05, maxdist=1.0, maxnbr=8):
+def link_neighbours(df, mindist=0.05, maxdist=1.0, maxnbr=8):
     # Create km coords
     if "coords_km" not in df.columns:
         df["coords_km"] = df.apply(lambda x: coord2km(x['coords']), axis=1)
 
-    # Create edgeref column
+    # Create nbr column
     if "nbrs" not in df.columns:
         df["nbrs"] = ""
 
     df['z'] = ""
     droplist = []
-    firstinst=-1
     for idx,node in df.iterrows():
         if idx in droplist:
             continue
         df['z'] = dist_from(node['coords_km'], np.asarray(df['coords_km'].tolist()))
         df.sort_values(by=['z'], inplace=True)
+
         # Erase nodes that are too close
-        
         for j in df.index[1:]:
             if df.loc[j]['z'] < mindist:
                 droplist.append(j)
@@ -201,28 +194,23 @@ def generate_edges(df, mindist=0.05, maxdist=1.0, maxnbr=8):
                 break
 
     df.drop(droplist,inplace=True)
-    n_edge_tot = 0
     for idx,node in df.iterrows():
         # Populate 'z' column
         df['z'] = dist_from(node['coords_km'], np.asarray(df['coords_km'].tolist()))
         df.sort_values(by=['z'],inplace=True)
-        edges = []
-        n_edge = 0
+        nbrs = []
+        n_nbr = 0
         for j in df.index[1:]:
             if df.loc[j]['z'] < maxdist:
-                edges.append(j)
-                n_edge+=1
+                nbrs.append(j)
+                n_nbr+=1
             else: break
-            if n_edge == maxnbr: break
-        df.at[idx,"nbrs"] = edges
-        n_edge_tot += n_edge
+            if n_nbr == maxnbr: break
+        df.at[idx,"nbrs"] = nbrs
 
     # Remove z
-    df.drop(columns='z',inplace=True)
-    # Reorder by index
-    df.sort_index(inplace=True)
-    
-    return n_edge_tot
+    df.drop(columns='z',inplace=True)    
+    return
     
         
 class graphplot:
